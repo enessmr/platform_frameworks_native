@@ -486,6 +486,9 @@ private:
                                     ui::Dataspace dataSpace,
                                     ui::RenderIntent renderIntent);
 
+    // Called on the main thread in response to enableVSyncInjections()
+    void enableVSyncInjectionsInternal(bool enable);
+
     // Returns whether the transaction actually modified any state
     bool handleMessageTransaction();
 
@@ -881,6 +884,9 @@ private:
     DisplayColorSetting mDisplayColorSetting = DisplayColorSetting::MANAGED;
     // Applied on sRGB layers when the render intent is non-colorimetric.
     mat4 mLegacySrgbSaturationMatrix;
+
+    float mSaturation = 1.0f;
+    bool mForceNativeColorMode = false;
 
     using CreateBufferQueueFunction =
             std::function<void(sp<IGraphicBufferProducer>* /* outProducer */,

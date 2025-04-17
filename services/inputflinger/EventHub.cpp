@@ -1086,9 +1086,9 @@ status_t EventHub::registerDeviceForEpollLocked(Device* device) {
     struct epoll_event eventItem;
     memset(&eventItem, 0, sizeof(eventItem));
     eventItem.events = EPOLLIN;
-    if (mUsingEpollWakeup) {
-        eventItem.events |= EPOLLWAKEUP;
-    }
+    // if (mUsingEpollWakeup) {
+    //     eventItem.events |= EPOLLWAKEUP;
+    // }
     eventItem.data.u32 = device->id;
     if (epoll_ctl(mEpollFd, EPOLL_CTL_ADD, device->fd, &eventItem)) {
         ALOGE("Could not add device fd to epoll instance.  errno=%d", errno);

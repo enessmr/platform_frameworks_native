@@ -22,7 +22,12 @@
 
 #include <memory>
 
+<<<<<<< HEAD
 #include <ui/PixelFormat.h>
+=======
+#include <ui/Gralloc1.h>
+
+>>>>>>> origin/aosp-9.0-dev
 #include <utils/Singleton.h>
 
 
@@ -53,6 +58,9 @@ public:
             uint32_t width, uint32_t height, uint32_t layerCount,
             PixelFormat format, uint64_t usage, uint32_t stride,
             buffer_handle_t* outHandle);
+
+    // This is temporary and will be removed soon
+    status_t importBuffer(const GraphicBuffer* buffer);
 
     status_t freeBuffer(buffer_handle_t handle);
 
@@ -91,6 +99,9 @@ private:
     GraphicBufferMapper();
 
     const std::unique_ptr<const Gralloc2::Mapper> mMapper;
+
+    std::unique_ptr<Gralloc1::Loader> mLoader;
+    std::unique_ptr<Gralloc1::Device> mDevice;
 };
 
 // ---------------------------------------------------------------------------

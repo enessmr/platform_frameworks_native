@@ -189,6 +189,18 @@ status_t GraphicBuffer::initWithHandle(const native_handle_t* handle,
         PixelFormat format, uint32_t layerCount, uint64_t usage,
         uint32_t stride)
 {
+    native_handle_t* clone = nullptr;
+
+    if (method == CLONE_HANDLE) {
+        clone = native_handle_clone(handle);
+        if (!clone) {
+            return NO_MEMORY;
+        }
+
+        handle = clone;
+        method = TAKE_UNREGISTERED_HANDLE;
+    }
+
     ANativeWindowBuffer::width  = static_cast<int>(width);
     ANativeWindowBuffer::height = static_cast<int>(height);
     ANativeWindowBuffer::stride = static_cast<int>(stride);
@@ -197,6 +209,7 @@ status_t GraphicBuffer::initWithHandle(const native_handle_t* handle,
     ANativeWindowBuffer::usage_deprecated = int(usage);
 
     ANativeWindowBuffer::layerCount = layerCount;
+    ANativeWindowBuffer::handle = handle;
 
     mOwner = (method == WRAP_HANDLE) ? ownNone : ownHandle;
 
@@ -205,6 +218,12 @@ status_t GraphicBuffer::initWithHandle(const native_handle_t* handle,
         status_t err = mBufferMapper.importBuffer(handle, width, height,
                 layerCount, format, usage, stride, &importedHandle);
         if (err != NO_ERROR) {
+            // clean up cloned handle
+            if (clone) {
+                native_handle_close(clone);
+                native_handle_delete(clone);
+            }
+
             initWithHandle(nullptr, WRAP_HANDLE, 0, 0, 0, 0, 0, 0);
 
             return err;
@@ -218,8 +237,6 @@ status_t GraphicBuffer::initWithHandle(const native_handle_t* handle,
         handle = importedHandle;
         mBufferMapper.getTransportSize(handle, &mTransportNumFds, &mTransportNumInts);
     }
-
-    ANativeWindowBuffer::handle = handle;
 
     return NO_ERROR;
 }

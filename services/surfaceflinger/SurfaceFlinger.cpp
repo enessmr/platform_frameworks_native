@@ -750,7 +750,9 @@ void SurfaceFlinger::readPersistentProperties() {
 
     property_get("persist.sys.sf.native_mode", value, "0");
     mDisplayColorSetting = static_cast<DisplayColorSetting>(atoi(value));
-}
+    if (mForceNativeColorMode) {
+        ALOGV("Forcing native color mode");
+    }
 
 void SurfaceFlinger::startBootAnim() {
     // Start boot animation service by setting a property mailbox
@@ -1140,6 +1142,28 @@ status_t SurfaceFlinger::getHdrCapabilities(const sp<IBinder>& display,
     return NO_ERROR;
 }
 
+void SurfaceFlinger::enableVSyncInjectionsInternal(bool enable) {
+    Mutex::Autolock _l(mStateLock);
+
+    if (mInjectVSyncs == enable) {
+        return;
+    }
+
+    if (enable) {
+        ALOGV("VSync Injections enabled");
+        if (mVSyncInjector.get() == nullptr) {
+            mVSyncInjector = new InjectVSyncSource();
+            mInjectorEventThread = new EventThread(mVSyncInjector, *this, false);
+        }
+        mEventQueue.setEventThread(mInjectorEventThread);
+    } else {
+        ALOGV("VSync Injections disabled");
+        mEventQueue.setEventThread(mSFEventThread);
+    }
+
+    mInjectVSyncs = enable;
+}
+
 status_t SurfaceFlinger::enableVSyncInjections(bool enable) {
     sp<LambdaMessage> enableVSyncInjections = new LambdaMessage([&]() {
         Mutex::Autolock _l(mStateLock);
@@ -1365,6 +1389,35 @@ void SurfaceFlinger::onHotplugReceived(int32_t sequenceId, hwc2_display_t displa
     if (sequenceId != getBE().mComposerSequenceId) {
         return;
     }
+    bool useWideColorMode = hasWideColorModes && hasWideColorDisplay && !mForceNativeColorMode;
+    sp<DisplayDevice> hw = new DisplayDevice(this, DisplayDevice::DISPLAY_PRIMARY, type, isSecure,
+                                             token, fbs, producer, mRenderEngine->getEGLConfig(),
+                                             useWideColorMode);
+    mDisplays.add(token, hw);
+    android_color_mode defaultColorMode = HAL_COLOR_MODE_NATIVE;
+    if (useWideColorMode) {
+        defaultColorMode = HAL_COLOR_MODE_SRGB;
+    }
+    setActiveColorModeInternal(hw, defaultColorMode);
+    hw->setCompositionDataSpace(HAL_DATASPACE_UNKNOWN);
+
+    // Add the primary display token to mDrawingState so we don't try to
+    // recreate the DisplayDevice for the primary display.
+    mDrawingState.displays.add(token, DisplayDeviceState(type, true));
+
+    // make the GLContext current so that we can create textures when creating
+    // Layers (which may happens before we render something)
+    hw->makeCurrent(mEGLDisplay, mEGLContext);
+}
+
+void SurfaceFlinger::onHotplugReceived(int32_t sequenceId,
+        hwc2_display_t display, HWC2::Connection connection,
+        bool primaryDisplay) {
+    ALOGV("onHotplugReceived(%d, %" PRIu64 ", %s, %s)",
+          sequenceId, display,
+          connection == HWC2::Connection::Connected ?
+                  "connected" : "disconnected",
+          primaryDisplay ? "primary" : "external");
 
     // Only lock if we're not on the main thread. This function is normally
     // called on a hwbinder thread, but for the primary display it's called on
@@ -1918,16 +1971,21 @@ Dataspace SurfaceFlinger::getBestDataspace(
     return bestDataSpace;
 }
 
-// Pick the ColorMode / Dataspace for the display device.
-void SurfaceFlinger::pickColorMode(const sp<DisplayDevice>& displayDevice,
-                                   ColorMode* outMode, Dataspace* outDataSpace,
-                                   RenderIntent* outRenderIntent) const {
-    if (mDisplayColorSetting == DisplayColorSetting::UNMANAGED) {
-        *outMode = ColorMode::NATIVE;
-        *outDataSpace = Dataspace::UNKNOWN;
-        *outRenderIntent = RenderIntent::COLORIMETRIC;
-        return;
+// pickColorMode translates a given dataspace into the best available color mode.
+// Currently only support sRGB and Display-P3.
+android_color_mode SurfaceFlinger::pickColorMode(android_dataspace dataSpace) const {
+    if (mForceNativeColorMode) {
+        return HAL_COLOR_MODE_NATIVE;
     }
+
+    switch (dataSpace) {
+        // treat Unknown as regular SRGB buffer, since that's what the rest of the
+        // system expects.
+        case HAL_DATASPACE_UNKNOWN:
+        case HAL_DATASPACE_SRGB:
+        case HAL_DATASPACE_V0_SRGB:
+            return HAL_COLOR_MODE_SRGB;
+            break;
 
     Dataspace hdrDataSpace;
     Dataspace bestDataSpace = getBestDataspace(displayDevice, &hdrDataSpace);
@@ -2903,29 +2961,13 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& displayDev
     if (hasClientComposition) {
         ALOGV("hasClientComposition");
 
-        Dataspace outputDataspace = Dataspace::UNKNOWN;
-        if (displayDevice->hasWideColorGamut()) {
-            outputDataspace = displayDevice->getCompositionDataSpace();
-        }
-        getBE().mRenderEngine->setOutputDataSpace(outputDataspace);
-        getBE().mRenderEngine->setDisplayMaxLuminance(
-                displayDevice->getHdrCapabilities().getDesiredMaxLuminance());
-
-        const bool hasDeviceComposition = getBE().mHwc->hasDeviceComposition(hwcId);
-        const bool skipClientColorTransform = getBE().mHwc->hasCapability(
-            HWC2::Capability::SkipClientColorTransform);
-
-        applyColorMatrix = !hasDeviceComposition && !skipClientColorTransform;
-        if (applyColorMatrix) {
-            getRenderEngine().setupColorTransform(mDrawingState.colorMatrix);
-        }
-
-        needsLegacyColorMatrix =
-            (displayDevice->getActiveRenderIntent() >= RenderIntent::ENHANCE &&
-             outputDataspace != Dataspace::UNKNOWN &&
-             outputDataspace != Dataspace::SRGB);
-
-        if (!displayDevice->makeCurrent()) {
+#ifdef USE_HWC2
+        mRenderEngine->setWideColor(
+                displayDevice->getWideColorSupport() && !mForceNativeColorMode);
+        mRenderEngine->setColorMode(mForceNativeColorMode ?
+                HAL_COLOR_MODE_NATIVE : displayDevice->getActiveColorMode());
+#endif
+        if (!displayDevice->makeCurrent(mEGLDisplay, mEGLContext)) {
             ALOGW("DisplayDevice::makeCurrent failed. Aborting surface composition for display %s",
                   displayDevice->getDisplayName().string());
             getRenderEngine().resetCurrentSurface();
@@ -4102,8 +4144,7 @@ void SurfaceFlinger::dumpBufferingStats(String8& result) const {
 
 void SurfaceFlinger::dumpWideColorInfo(String8& result) const {
     result.appendFormat("hasWideColorDisplay: %d\n", hasWideColorDisplay);
-    result.appendFormat("DisplayColorSetting: %s\n",
-            decodeDisplayColorSetting(mDisplayColorSetting).c_str());
+    result.appendFormat("forceNativeColorMode: %d\n", mForceNativeColorMode);
 
     // TODO: print out if wide-color mode is active or not
 
@@ -4631,7 +4672,19 @@ status_t SurfaceFlinger::onTransact(
                 return NO_ERROR;
             }
             case 1023: { // Set native mode
-                mDisplayColorSetting = static_cast<DisplayColorSetting>(data.readInt32());
+                int value = data.readInt32();
+                if (value == 1) {
+                    mForceNativeColorMode = true;
+                } else {
+                    mDisplayColorSetting = static_cast<DisplayColorSetting>(data.readInt32());
+                }
+                invalidateHwcGeometry();
+                repaintEverything();
+                return NO_ERROR;
+            }
+            case 1023: { // Set native mode
+                mForceNativeColorMode = data.readInt32() == 1;
+
                 invalidateHwcGeometry();
                 repaintEverything();
                 return NO_ERROR;
@@ -4819,6 +4872,13 @@ status_t SurfaceFlinger::captureLayers(const sp<IBinder>& layerHandleBinder,
         crop.top = 0;
         crop.bottom = parent->getCurrentState().active.h;
     }
+    ANativeWindowBuffer* buffer = nullptr;
+    result = getWindowBuffer(window, reqWidth, reqHeight,
+            hasWideColorDisplay && !mForceNativeColorMode,
+            getRenderEngine().usesWideColor(), &buffer);
+    if (result != NO_ERROR) {
+        return result;
+    }
 
     int32_t reqWidth = crop.width() * frameScale;
     int32_t reqHeight = crop.height() * frameScale;
@@ -4976,6 +5036,10 @@ void SurfaceFlinger::renderScreenImplLocked(const RenderArea& renderArea,
     // assume ColorMode::SRGB / RenderIntent::COLORIMETRIC
     engine.setOutputDataSpace(Dataspace::SRGB);
     engine.setDisplayMaxLuminance(DisplayDevice::sDefaultMaxLumiance);
+    #ifdef USE_HWC2
+        engine.setWideColor(hw->getWideColorSupport() && !mForceNativeColorMode);
+        engine.setColorMode(mForceNativeColorMode ? HAL_COLOR_MODE_NATIVE : hw->getActiveColorMode());
+    #endif
 
     // make sure to clear all GL error flags
     engine.checkErrors();

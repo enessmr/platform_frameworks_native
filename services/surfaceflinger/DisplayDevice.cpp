@@ -62,6 +62,15 @@ using android::ui::Dataspace;
 using android::ui::Hdr;
 using android::ui::RenderIntent;
 
+static bool useTripleFramebuffer = getInt64< ISurfaceFlingerConfigs,
+        &ISurfaceFlingerConfigs::maxFrameBufferAcquiredBuffers>(2) >= 3;
+
+#if !defined(EGL_EGLEXT_PROTOTYPES) || !defined(EGL_ANDROID_swap_rectangle)
+// Dummy implementation in case it is missing.
+inline void eglSetSwapRectangleANDROID (EGLDisplay, EGLSurface, EGLint, EGLint, EGLint, EGLint) {
+}
+#endif
+
 /*
  * Initialize the display to the specified values.
  *

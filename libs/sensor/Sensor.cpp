@@ -493,6 +493,7 @@ status_t Sensor::flatten(void* buffer, size_t size) const {
     FlattenableUtils::write(buffer, size, mRequiredAppOp);
     FlattenableUtils::write(buffer, size, mMaxDelay);
     FlattenableUtils::write(buffer, size, mFlags);
+#ifndef ICS_SENSOR_BLOB
     if (mUuid.i64[1] != 0) {
         // We should never hit this case with our current API, but we
         // could via a careless API change.  If that happens,
@@ -505,6 +506,11 @@ status_t Sensor::flatten(void* buffer, size_t size) const {
     } else {
         FlattenableUtils::write(buffer, size, mUuid);
     }
+#else
+    uuid_t tmpUuid;  // default constructor makes this 0.
+    FlattenableUtils::write(buffer, size, tmpUuid);
+#endif
+
     return NO_ERROR;
 }
 
@@ -553,7 +559,13 @@ status_t Sensor::unflatten(void const* buffer, size_t size) {
     FlattenableUtils::read(buffer, size, mRequiredAppOp);
     FlattenableUtils::read(buffer, size, mMaxDelay);
     FlattenableUtils::read(buffer, size, mFlags);
+#ifndef ICS_SENSOR_BLOB
     FlattenableUtils::read(buffer, size, mUuid);
+#else
+    uuid_t tmpUuid;  // default constructor makes this 0.
+    mUuid = tmpUuid;
+#endif
+
     return NO_ERROR;
 }
 

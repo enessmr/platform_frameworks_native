@@ -69,6 +69,8 @@ cc_library_shared {
         "-Wno-packed",
 
         "-DDEBUG_ONLY_CODE=0",
+
+        "-DICS_SENSOR_BLOB",
     ],
 
     product_variables: {
